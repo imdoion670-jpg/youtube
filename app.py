@@ -249,5 +249,3 @@ if st.button("댓글 분석 시작"):
     ax3.axis("off")
 
     st.pyplot(fig3)
-
-```
