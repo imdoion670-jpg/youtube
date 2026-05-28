@@ -4,8 +4,3 @@ requests
 plotly
 wordcloud
 matplotlib
-seaborn
-konlpy
-google-api-python-client
-Pillow
-numpy
