@@ -10,25 +10,25 @@ from urllib.parse import urlparse, parse_qs
 import re
 
 # -----------------------------
-# Streamlit 기본 설정
+# 페이지 설정
 # -----------------------------
 st.set_page_config(
     page_title="YouTube 댓글 분석기",
     layout="wide"
 )
 
-st.title("📺 YouTube 댓글 분석 및 시각화")
+st.title("📺 YouTube 댓글 분석 대시보드")
 
 # -----------------------------
-# YouTube API Key 입력
+# API KEY
 # -----------------------------
 API_KEY = st.text_input(
-    "YouTube Data API Key 입력",
+    "YouTube Data API Key",
     type="password"
 )
 
 # -----------------------------
-# 유튜브 URL 입력
+# 유튜브 링크 입력
 # -----------------------------
 video_url = st.text_input(
     "YouTube 영상 링크 입력"
@@ -46,9 +46,10 @@ max_comments = st.slider(
 )
 
 # -----------------------------
-# 영상 ID 추출 함수
+# Video ID 추출
 # -----------------------------
 def extract_video_id(url):
+
     if "youtube.com" in url:
         query = urlparse(url)
         return parse_qs(query.query)["v"][0]
@@ -88,7 +89,7 @@ def get_comments(video_id, api_key, max_results):
 
             comments.append({
                 "comment": comment["textDisplay"],
-                "likeCount": comment["likeCount"],
+                "likes": comment["likeCount"],
                 "publishedAt": comment["publishedAt"]
             })
 
@@ -103,43 +104,39 @@ def get_comments(video_id, api_key, max_results):
     return pd.DataFrame(comments)
 
 # -----------------------------
-# 워드클라우드 생성 함수
+# 워드클라우드 생성
 # -----------------------------
-def generate_wordcloud(text):
+def create_wordcloud(text):
 
     okt = Okt()
 
-    # 한글만 추출
     text = re.sub(r"[^가-힣\s]", "", text)
 
     nouns = okt.nouns(text)
 
-    # 2글자 이상만 사용
-    nouns = [word for word in nouns if len(word) > 1]
+    nouns = [
+        word for word in nouns
+        if len(word) > 1
+    ]
 
     counter = Counter(nouns)
 
-    # Windows 기준 한글 폰트
-    font_path = "malgun.ttf"
-
-    wc = WordCloud(
-        font_path=font_path,
+    wordcloud = WordCloud(
+        font_path="malgun.ttf",
         background_color="white",
-        width=1000,
-        height=500
-    )
-
-    wordcloud = wc.generate_from_frequencies(counter)
+        width=1200,
+        height=600
+    ).generate_from_frequencies(counter)
 
     return wordcloud
 
 # -----------------------------
-# 분석 실행 버튼
+# 분석 시작 버튼
 # -----------------------------
 if st.button("댓글 분석 시작"):
 
     if not API_KEY:
-        st.warning("API Key를 입력해주세요.")
+        st.warning("API KEY를 입력해주세요.")
         st.stop()
 
     if not video_url:
@@ -156,29 +153,28 @@ if st.button("댓글 분석 시작"):
             max_comments
         )
 
-    st.success(f"{len(df)}개의 댓글 수집 완료!")
+    st.success(f"{len(df)}개 댓글 수집 완료!")
 
     # -----------------------------
     # 데이터 전처리
     # -----------------------------
     df["publishedAt"] = pd.to_datetime(df["publishedAt"])
 
-    df["date"] = df["publishedAt"].dt.date
     df["hour"] = df["publishedAt"].dt.hour
 
     # -----------------------------
-    # 데이터 미리보기
+    # 데이터 테이블
     # -----------------------------
     st.subheader("📄 댓글 데이터")
 
-    st.dataframe(df.head())
+    st.dataframe(df.head(20))
 
     # -----------------------------
     # 시간대별 댓글 수
     # -----------------------------
     st.subheader("⏰ 시간대별 댓글 추이")
 
-    hourly_comments = (
+    hourly = (
         df.groupby("hour")
         .size()
         .reset_index(name="count")
@@ -187,7 +183,7 @@ if st.button("댓글 분석 시작"):
     fig1, ax1 = plt.subplots(figsize=(10, 4))
 
     sns.lineplot(
-        data=hourly_comments,
+        data=hourly,
         x="hour",
         y="count",
         marker="o",
@@ -196,41 +192,44 @@ if st.button("댓글 분석 시작"):
 
     ax1.set_xlabel("시간")
     ax1.set_ylabel("댓글 수")
-    ax1.set_title("시간대별 댓글 수")
 
     st.pyplot(fig1)
 
     # -----------------------------
     # 좋아요 분석
     # -----------------------------
-    st.subheader("👍 좋아요 수 분석")
+    st.subheader("👍 댓글 좋아요 분석")
 
     fig2, ax2 = plt.subplots(figsize=(10, 4))
 
     sns.histplot(
-        df["likeCount"],
+        df["likes"],
         bins=30,
         kde=True,
         ax=ax2
     )
 
-    ax2.set_title("댓글 좋아요 분포")
     ax2.set_xlabel("좋아요 수")
 
     st.pyplot(fig2)
 
-    # 상위 댓글
+    # -----------------------------
+    # 좋아요 TOP 댓글
+    # -----------------------------
     st.subheader("🔥 좋아요 TOP 댓글")
 
-    top_comments = df.sort_values(
-        by="likeCount",
-        ascending=False
-    ).head(10)
+    top_comments = (
+        df.sort_values(
+            by="likes",
+            ascending=False
+        )
+        .head(10)
+    )
 
     st.dataframe(
         top_comments[[
             "comment",
-            "likeCount"
+            "likes"
         ]]
     )
 
@@ -239,13 +238,14 @@ if st.button("댓글 분석 시작"):
     # -----------------------------
     st.subheader("☁️ 자주 등장하는 단어")
 
-    full_text = " ".join(df["comment"].astype(str))
+    text = " ".join(df["comment"].astype(str))
 
-    wordcloud = generate_wordcloud(full_text)
+    wc = create_wordcloud(text)
 
     fig3, ax3 = plt.subplots(figsize=(15, 7))
 
-    ax3.imshow(wordcloud)
+    ax3.imshow(wc)
+
     ax3.axis("off")
 
     st.pyplot(fig3)
