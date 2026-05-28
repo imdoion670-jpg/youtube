@@ -1,6 +1,10 @@
 streamlit
 pandas
-requests
-plotly
-wordcloud
 matplotlib
+seaborn
+wordcloud
+konlpy
+jpype1
+google-api-python-client
+numpy
+Pillow
