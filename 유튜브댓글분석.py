@@ -4,10 +4,16 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from wordcloud import WordCloud
 from collections import Counter
-from konlpy.tag import Okt
+from kiwipiepy import Kiwi
 from googleapiclient.discovery import build
 from urllib.parse import urlparse, parse_qs
 import re
+
+# -----------------------------
+# 한글 폰트 설정
+# -----------------------------
+plt.rcParams["font.family"] = "NanumGothic"
+plt.rcParams["axes.unicode_minus"] = False
 
 # -----------------------------
 # 페이지 설정
@@ -50,14 +56,20 @@ max_comments = st.slider(
 # -----------------------------
 def extract_video_id(url):
 
-    if "youtube.com" in url:
-        query = urlparse(url)
-        return parse_qs(query.query)["v"][0]
+    try:
+        if "youtube.com" in url:
+            return parse_qs(
+                urlparse(url).query
+            ).get("v", [None])[0]
 
-    elif "youtu.be" in url:
-        return url.split("/")[-1]
+        elif "youtu.be" in url:
+            return url.split("/")[-1]
+
+    except Exception:
+        return None
 
     return None
+
 
 # -----------------------------
 # 댓글 수집 함수
@@ -103,35 +115,50 @@ def get_comments(video_id, api_key, max_results):
 
     return pd.DataFrame(comments)
 
+
 # -----------------------------
 # 워드클라우드 생성
 # -----------------------------
 def create_wordcloud(text):
 
-    okt = Okt()
+    kiwi = Kiwi()
 
-    text = re.sub(r"[^가-힣\s]", "", text)
+    text = re.sub(
+        r"[^가-힣a-zA-Z\s]",
+        " ",
+        text
+    )
 
-    nouns = okt.nouns(text)
+    tokens = kiwi.tokenize(text)
 
-    nouns = [
-        word for word in nouns
-        if len(word) > 1
-    ]
+    nouns = []
+
+    for token in tokens:
+
+        if token.tag.startswith("N"):
+
+            if len(token.form) > 1:
+
+                nouns.append(
+                    token.form
+                )
 
     counter = Counter(nouns)
 
-    wordcloud = WordCloud(
-        font_path="malgun.ttf",
-        background_color="white",
-        width=1200,
-        height=600
-    ).generate_from_frequencies(counter)
+    if not counter:
+        return None
 
-    return wordcloud
+    wc = WordCloud(
+        width=1200,
+        height=600,
+        background_color="white"
+    )
+
+    return wc.generate_from_frequencies(counter)
+
 
 # -----------------------------
-# 분석 시작 버튼
+# 분석 시작
 # -----------------------------
 if st.button("댓글 분석 시작"):
 
@@ -145,7 +172,15 @@ if st.button("댓글 분석 시작"):
 
     with st.spinner("댓글 수집 중..."):
 
-        video_id = extract_video_id(video_url)
+        video_id = extract_video_id(
+            video_url
+        )
+
+        if not video_id:
+            st.error(
+                "유효한 유튜브 링크가 아닙니다."
+            )
+            st.stop()
 
         df = get_comments(
             video_id,
@@ -153,26 +188,43 @@ if st.button("댓글 분석 시작"):
             max_comments
         )
 
-    st.success(f"{len(df)}개 댓글 수집 완료!")
+    if len(df) == 0:
+        st.error(
+            "댓글을 불러올 수 없습니다."
+        )
+        st.stop()
+
+    st.success(
+        f"{len(df)}개 댓글 수집 완료!"
+    )
 
     # -----------------------------
     # 데이터 전처리
     # -----------------------------
-    df["publishedAt"] = pd.to_datetime(df["publishedAt"])
+    df["publishedAt"] = pd.to_datetime(
+        df["publishedAt"]
+    )
 
-    df["hour"] = df["publishedAt"].dt.hour
+    df["hour"] = (
+        df["publishedAt"]
+        .dt.hour
+    )
 
     # -----------------------------
     # 데이터 테이블
     # -----------------------------
     st.subheader("📄 댓글 데이터")
 
-    st.dataframe(df.head(20))
+    st.dataframe(
+        df.head(20)
+    )
 
     # -----------------------------
     # 시간대별 댓글 수
     # -----------------------------
-    st.subheader("⏰ 시간대별 댓글 추이")
+    st.subheader(
+        "⏰ 시간대별 댓글 추이"
+    )
 
     hourly = (
         df.groupby("hour")
@@ -180,7 +232,9 @@ if st.button("댓글 분석 시작"):
         .reset_index(name="count")
     )
 
-    fig1, ax1 = plt.subplots(figsize=(10, 4))
+    fig1, ax1 = plt.subplots(
+        figsize=(10, 4)
+    )
 
     sns.lineplot(
         data=hourly,
@@ -190,17 +244,30 @@ if st.button("댓글 분석 시작"):
         ax=ax1
     )
 
-    ax1.set_xlabel("시간")
-    ax1.set_ylabel("댓글 수")
+    ax1.set_title(
+        "시간대별 댓글 수"
+    )
+
+    ax1.set_xlabel(
+        "시간"
+    )
+
+    ax1.set_ylabel(
+        "댓글 수"
+    )
 
     st.pyplot(fig1)
 
     # -----------------------------
     # 좋아요 분석
     # -----------------------------
-    st.subheader("👍 댓글 좋아요 분석")
+    st.subheader(
+        "👍 댓글 좋아요 분석"
+    )
 
-    fig2, ax2 = plt.subplots(figsize=(10, 4))
+    fig2, ax2 = plt.subplots(
+        figsize=(10, 4)
+    )
 
     sns.histplot(
         df["likes"],
@@ -209,14 +276,26 @@ if st.button("댓글 분석 시작"):
         ax=ax2
     )
 
-    ax2.set_xlabel("좋아요 수")
+    ax2.set_title(
+        "좋아요 분포"
+    )
+
+    ax2.set_xlabel(
+        "좋아요 수"
+    )
+
+    ax2.set_ylabel(
+        "댓글 개수"
+    )
 
     st.pyplot(fig2)
 
     # -----------------------------
-    # 좋아요 TOP 댓글
+    # TOP 댓글
     # -----------------------------
-    st.subheader("🔥 좋아요 TOP 댓글")
+    st.subheader(
+        "🔥 좋아요 TOP 댓글"
+    )
 
     top_comments = (
         df.sort_values(
@@ -227,25 +306,38 @@ if st.button("댓글 분석 시작"):
     )
 
     st.dataframe(
-        top_comments[[
-            "comment",
-            "likes"
-        ]]
+        top_comments[
+            ["comment", "likes"]
+        ]
     )
 
     # -----------------------------
     # 워드클라우드
     # -----------------------------
-    st.subheader("☁️ 자주 등장하는 단어")
+    st.subheader(
+        "☁️ 자주 등장하는 단어"
+    )
 
-    text = " ".join(df["comment"].astype(str))
+    text = " ".join(
+        df["comment"]
+        .astype(str)
+    )
 
     wc = create_wordcloud(text)
 
-    fig3, ax3 = plt.subplots(figsize=(15, 7))
+    if wc:
 
-    ax3.imshow(wc)
+        fig3, ax3 = plt.subplots(
+            figsize=(15, 7)
+        )
 
-    ax3.axis("off")
+        ax3.imshow(wc)
 
-    st.pyplot(fig3)
+        ax3.axis("off")
+
+        st.pyplot(fig3)
+
+    else:
+        st.warning(
+            "워드클라우드 생성 실패"
+        )
