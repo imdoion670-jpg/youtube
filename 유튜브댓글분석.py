@@ -1,14 +1,13 @@
-import os
 import streamlit as st
 import pandas as pd
 import matplotlib.pyplot as plt
-import matplotlib.font_manager as fm
 import seaborn as sns
 from wordcloud import WordCloud
 from collections import Counter
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from urllib.parse import urlparse, parse_qs
+from pathlib import Path
 import re
 
 # -----------------------------
@@ -16,39 +15,14 @@ import re
 # -----------------------------
 st.set_page_config(
     page_title="YouTube 댓글 분석기",
+    page_icon="📺",
     layout="wide"
 )
 
 # -----------------------------
-# 한글 폰트 자동 탐색
+# 한글 설정
 # -----------------------------
-def find_korean_font():
-    candidates = [
-        "/usr/share/fonts/truetype/nanum/NanumGothic.ttf",
-        "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
-        "C:/Windows/Fonts/malgun.ttf",
-        "/Library/Fonts/AppleGothic.ttf",
-    ]
-    for path in candidates:
-        if os.path.exists(path):
-            return path
-    for f in fm.findSystemFonts():
-        name = os.path.basename(f).lower()
-        if any(k in name for k in ["nanum", "malgun", "gothic", "noto"]):
-            return f
-    return None
-
-KOREAN_FONT = find_korean_font()
-
-# -----------------------------
-# 한글 깨짐 방지
-# -----------------------------
-if KOREAN_FONT:
-    font_name = fm.FontProperties(fname=KOREAN_FONT).get_name()
-    plt.rcParams["font.family"] = font_name
-else:
-    plt.rcParams["font.family"] = "sans-serif"
-
+plt.rcParams["font.family"] = "NanumGothic"
 plt.rcParams["axes.unicode_minus"] = False
 
 st.title("📺 YouTube 댓글 분석 대시보드")
@@ -56,16 +30,16 @@ st.title("📺 YouTube 댓글 분석 대시보드")
 # -----------------------------
 # API KEY
 # -----------------------------
-API_KEY = st.text_input(
+api_key = st.text_input(
     "YouTube Data API Key",
     type="password"
 )
 
 # -----------------------------
-# 링크 입력
+# 유튜브 링크
 # -----------------------------
 video_url = st.text_input(
-    "YouTube 영상 링크 입력"
+    "YouTube 영상 링크"
 )
 
 # -----------------------------
@@ -73,14 +47,14 @@ video_url = st.text_input(
 # -----------------------------
 max_comments = st.slider(
     "수집할 댓글 수",
-    min_value=20,
-    max_value=1000,
-    value=200,
-    step=20
+    20,
+    1000,
+    200,
+    20
 )
 
 # -----------------------------
-# 영상 ID 추출
+# Video ID 추출
 # -----------------------------
 def extract_video_id(url):
 
@@ -95,25 +69,24 @@ def extract_video_id(url):
             ).get("v", [None])[0]
 
     except:
-        pass
+        return None
 
     return None
-
 
 # -----------------------------
 # 댓글 수집
 # -----------------------------
-def get_comments(video_id, api_key, max_results):
+def get_comments(video_id, api_key, limit):
+
+    youtube = build(
+        "youtube",
+        "v3",
+        developerKey=api_key
+    )
+
+    comments = []
 
     try:
-
-        youtube = build(
-            "youtube",
-            "v3",
-            developerKey=api_key
-        )
-
-        comments = []
 
         request = youtube.commentThreads().list(
             part="snippet",
@@ -122,15 +95,13 @@ def get_comments(video_id, api_key, max_results):
             textFormat="plainText"
         )
 
-        while request and len(comments) < max_results:
+        while request and len(comments) < limit:
 
             response = request.execute()
 
             for item in response["items"]:
 
-                comment = item["snippet"][
-                    "topLevelComment"
-                ]["snippet"]
+                comment = item["snippet"]["topLevelComment"]["snippet"]
 
                 comments.append({
                     "comment": comment["textDisplay"],
@@ -138,7 +109,7 @@ def get_comments(video_id, api_key, max_results):
                     "publishedAt": comment["publishedAt"]
                 })
 
-                if len(comments) >= max_results:
+                if len(comments) >= limit:
                     break
 
             request = youtube.commentThreads().list_next(
@@ -146,24 +117,12 @@ def get_comments(video_id, api_key, max_results):
                 response
             )
 
-        return pd.DataFrame(comments)
-
     except HttpError as e:
 
-        st.error(
-            f"YouTube API 오류\n\n{e}"
-        )
-
+        st.error(f"YouTube API 오류\n\n{e}")
         return pd.DataFrame()
 
-    except Exception as e:
-
-        st.error(
-            f"오류 발생\n\n{e}"
-        )
-
-        return pd.DataFrame()
-
+    return pd.DataFrame(comments)
 
 # -----------------------------
 # 워드클라우드
@@ -189,64 +148,61 @@ def create_wordcloud(text):
     if len(counter) == 0:
         return None
 
-    if KOREAN_FONT is None:
-        st.warning("한글 폰트를 찾을 수 없습니다. `sudo apt-get install fonts-nanum` 으로 설치해주세요.")
+    font_path = None
 
-    return WordCloud(
-        font_path=KOREAN_FONT,
+    if Path("NanumGothic.ttf").exists():
+        font_path = "NanumGothic.ttf"
+
+    wc = WordCloud(
+        font_path=font_path,
         width=1200,
         height=600,
         background_color="white"
-    ).generate_from_frequencies(counter)
+    )
 
+    return wc.generate_from_frequencies(counter)
 
 # -----------------------------
 # 분석 시작
 # -----------------------------
 if st.button("댓글 분석 시작"):
 
-    if not API_KEY:
-        st.warning("API Key 입력")
+    if not api_key:
+        st.warning("API Key를 입력하세요.")
         st.stop()
 
     if not video_url:
-        st.warning("영상 링크 입력")
+        st.warning("유튜브 링크를 입력하세요.")
         st.stop()
 
-    video_id = extract_video_id(
-        video_url
-    )
+    video_id = extract_video_id(video_url)
 
     if not video_id:
-        st.error(
-            "올바른 유튜브 링크가 아닙니다."
-        )
+        st.error("올바른 유튜브 링크가 아닙니다.")
         st.stop()
 
     with st.spinner("댓글 수집 중..."):
 
         df = get_comments(
             video_id,
-            API_KEY,
+            api_key,
             max_comments
         )
 
     if df.empty:
         st.stop()
 
-    st.success(
-        f"{len(df)}개 댓글 수집 완료"
-    )
+    st.success(f"{len(df)}개 댓글 수집 완료")
 
     # -----------------------------
-    # 데이터
+    # 데이터 테이블
     # -----------------------------
     st.subheader("📄 댓글 데이터")
 
     st.dataframe(df.head(20))
 
     # -----------------------------
-    # 시간대
+    # 시간대 분석
     # -----------------------------
     df["publishedAt"] = pd.to_datetime(
         df["publishedAt"]
@@ -263,13 +219,9 @@ if st.button("댓글 분석 시작"):
         .reset_index(name="count")
     )
 
-    st.subheader(
-        "⏰ 시간대별 댓글 추이"
-    )
+    st.subheader("⏰ 시간대별 댓글 추이")
 
-    fig1, ax1 = plt.subplots(
-        figsize=(10, 4)
-    )
+    fig1, ax1 = plt.subplots(figsize=(10, 4))
 
     sns.lineplot(
         data=hourly,
@@ -279,18 +231,17 @@ if st.button("댓글 분석 시작"):
         ax=ax1
     )
 
+    ax1.set_xlabel("시간")
+    ax1.set_ylabel("댓글 수")
+
     st.pyplot(fig1)
 
     # -----------------------------
-    # 좋아요
+    # 좋아요 분포
     # -----------------------------
-    st.subheader(
-        "👍 좋아요 분포"
-    )
+    st.subheader("👍 좋아요 분포")
 
-    fig2, ax2 = plt.subplots(
-        figsize=(10, 4)
-    )
+    fig2, ax2 = plt.subplots(figsize=(10, 4))
 
     sns.histplot(
         df["likes"],
@@ -299,14 +250,14 @@ if st.button("댓글 분석 시작"):
         ax=ax2
     )
 
+    ax2.set_xlabel("좋아요 수")
+
     st.pyplot(fig2)
 
     # -----------------------------
     # TOP 댓글
     # -----------------------------
-    st.subheader(
-        "🔥 좋아요 TOP 댓글"
-    )
+    st.subheader("🔥 좋아요 TOP 댓글")
 
     top_comments = (
         df.sort_values(
@@ -325,9 +276,7 @@ if st.button("댓글 분석 시작"):
     # -----------------------------
     # 워드클라우드
     # -----------------------------
-    st.subheader(
-        "☁️ 워드클라우드"
-    )
+    st.subheader("☁️ 워드클라우드")
 
     text = " ".join(
         df["comment"].astype(str)
@@ -346,3 +295,9 @@ if st.button("댓글 분석 시작"):
         ax3.axis("off")
 
         st.pyplot(fig3)
+
+    else:
+
+        st.warning(
+            "워드클라우드를 생성할 수 없습니다."
+        )
