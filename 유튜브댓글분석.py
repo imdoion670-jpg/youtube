@@ -1,6 +1,8 @@
+import os
 import streamlit as st
 import pandas as pd
 import matplotlib.pyplot as plt
+import matplotlib.font_manager as fm
 import seaborn as sns
 from wordcloud import WordCloud
 from collections import Counter
@@ -18,9 +20,35 @@ st.set_page_config(
 )
 
 # -----------------------------
+# 한글 폰트 자동 탐색
+# -----------------------------
+def find_korean_font():
+    candidates = [
+        "/usr/share/fonts/truetype/nanum/NanumGothic.ttf",
+        "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+        "C:/Windows/Fonts/malgun.ttf",
+        "/Library/Fonts/AppleGothic.ttf",
+    ]
+    for path in candidates:
+        if os.path.exists(path):
+            return path
+    for f in fm.findSystemFonts():
+        name = os.path.basename(f).lower()
+        if any(k in name for k in ["nanum", "malgun", "gothic", "noto"]):
+            return f
+    return None
+
+KOREAN_FONT = find_korean_font()
+
+# -----------------------------
 # 한글 깨짐 방지
 # -----------------------------
-plt.rcParams["font.family"] = "sans-serif"
+if KOREAN_FONT:
+    font_name = fm.FontProperties(fname=KOREAN_FONT).get_name()
+    plt.rcParams["font.family"] = font_name
+else:
+    plt.rcParams["font.family"] = "sans-serif"
+
 plt.rcParams["axes.unicode_minus"] = False
 
 st.title("📺 YouTube 댓글 분석 대시보드")
@@ -161,7 +189,11 @@ def create_wordcloud(text):
     if len(counter) == 0:
         return None
 
+    if KOREAN_FONT is None:
+        st.warning("한글 폰트를 찾을 수 없습니다. `sudo apt-get install fonts-nanum` 으로 설치해주세요.")
+
     return WordCloud(
+        font_path=KOREAN_FONT,
         width=1200,
         height=600,
         background_color="white"
