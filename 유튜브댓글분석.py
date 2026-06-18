@@ -10,41 +10,42 @@ from urllib.parse import urlparse, parse_qs
 from pathlib import Path
 import re
 
-# -----------------------------
+# =====================
+# 한글 폰트 설정
+# =====================
+
+FONT_PATH = "/usr/share/fonts/truetype/nanum/NanumGothic.ttf"
+
+if Path(FONT_PATH).exists():
+    plt.rcParams["font.family"] = "NanumGothic"
+
+plt.rcParams["axes.unicode_minus"] = False
+
+# =====================
 # 페이지 설정
-# -----------------------------
+# =====================
+
 st.set_page_config(
     page_title="YouTube 댓글 분석기",
     page_icon="📺",
     layout="wide"
 )
 
-# -----------------------------
-# 한글 설정
-# -----------------------------
-plt.rcParams["font.family"] = "NanumGothic"
-plt.rcParams["axes.unicode_minus"] = False
+st.title("📺 YouTube 댓글 분석기")
 
-st.title("📺 YouTube 댓글 분석 대시보드")
+# =====================
+# 입력
+# =====================
 
-# -----------------------------
-# API KEY
-# -----------------------------
 api_key = st.text_input(
-    "YouTube Data API Key",
+    "YouTube API Key",
     type="password"
 )
 
-# -----------------------------
-# 유튜브 링크
-# -----------------------------
 video_url = st.text_input(
-    "YouTube 영상 링크"
+    "유튜브 영상 링크"
 )
 
-# -----------------------------
-# 댓글 수
-# -----------------------------
 max_comments = st.slider(
     "수집할 댓글 수",
     20,
@@ -53,17 +54,19 @@ max_comments = st.slider(
     20
 )
 
-# -----------------------------
-# Video ID 추출
-# -----------------------------
+# =====================
+# 비디오 ID 추출
+# =====================
+
 def extract_video_id(url):
 
     try:
 
-        if "youtu.be/" in url:
+        if "youtu.be" in url:
             return url.split("/")[-1].split("?")[0]
 
         if "youtube.com" in url:
+
             return parse_qs(
                 urlparse(url).query
             ).get("v", [None])[0]
@@ -73,9 +76,10 @@ def extract_video_id(url):
 
     return None
 
-# -----------------------------
+# =====================
 # 댓글 수집
-# -----------------------------
+# =====================
+
 def get_comments(video_id, api_key, limit):
 
     youtube = build(
@@ -86,47 +90,41 @@ def get_comments(video_id, api_key, limit):
 
     comments = []
 
-    try:
+    request = youtube.commentThreads().list(
+        part="snippet",
+        videoId=video_id,
+        maxResults=100,
+        textFormat="plainText"
+    )
 
-        request = youtube.commentThreads().list(
-            part="snippet",
-            videoId=video_id,
-            maxResults=100,
-            textFormat="plainText"
+    while request and len(comments) < limit:
+
+        response = request.execute()
+
+        for item in response["items"]:
+
+            snippet = item["snippet"]["topLevelComment"]["snippet"]
+
+            comments.append({
+                "comment": snippet["textDisplay"],
+                "likes": snippet["likeCount"],
+                "publishedAt": snippet["publishedAt"]
+            })
+
+            if len(comments) >= limit:
+                break
+
+        request = youtube.commentThreads().list_next(
+            request,
+            response
         )
-
-        while request and len(comments) < limit:
-
-            response = request.execute()
-
-            for item in response["items"]:
-
-                comment = item["snippet"]["topLevelComment"]["snippet"]
-
-                comments.append({
-                    "comment": comment["textDisplay"],
-                    "likes": comment["likeCount"],
-                    "publishedAt": comment["publishedAt"]
-                })
-
-                if len(comments) >= limit:
-                    break
-
-            request = youtube.commentThreads().list_next(
-                request,
-                response
-            )
-
-    except HttpError as e:
-
-        st.error(f"YouTube API 오류\n\n{e}")
-        return pd.DataFrame()
 
     return pd.DataFrame(comments)
 
-# -----------------------------
+# =====================
 # 워드클라우드
-# -----------------------------
+# =====================
+
 def create_wordcloud(text):
 
     text = re.sub(
@@ -148,13 +146,8 @@ def create_wordcloud(text):
     if len(counter) == 0:
         return None
 
-    font_path = None
-
-    if Path("NanumGothic.ttf").exists():
-        font_path = "NanumGothic.ttf"
-
     wc = WordCloud(
-        font_path=font_path,
+        font_path=FONT_PATH,
         width=1200,
         height=600,
         background_color="white"
@@ -162,9 +155,10 @@ def create_wordcloud(text):
 
     return wc.generate_from_frequencies(counter)
 
-# -----------------------------
+# =====================
 # 분석 시작
-# -----------------------------
+# =====================
+
 if st.button("댓글 분석 시작"):
 
     if not api_key:
@@ -181,29 +175,40 @@ if st.button("댓글 분석 시작"):
         st.error("올바른 유튜브 링크가 아닙니다.")
         st.stop()
 
-    with st.spinner("댓글 수집 중..."):
+    try:
 
-        df = get_comments(
-            video_id,
-            api_key,
-            max_comments
-        )
+        with st.spinner("댓글 수집 중..."):
+
+            df = get_comments(
+                video_id,
+                api_key,
+                max_comments
+            )
+
+    except HttpError as e:
+
+        st.error(f"YouTube API 오류\n\n{e}")
+        st.stop()
 
     if df.empty:
+
+        st.error("댓글이 없습니다.")
         st.stop()
 
     st.success(f"{len(df)}개 댓글 수집 완료")
 
-    # -----------------------------
-    # 데이터 테이블
-    # -----------------------------
+    # =====================
+    # 데이터
+    # =====================
+
     st.subheader("📄 댓글 데이터")
 
     st.dataframe(df.head(20))
 
-    # -----------------------------
+    # =====================
     # 시간대 분석
-    # -----------------------------
+    # =====================
+
     df["publishedAt"] = pd.to_datetime(
         df["publishedAt"]
     )
@@ -221,7 +226,9 @@ if st.button("댓글 분석 시작"):
 
     st.subheader("⏰ 시간대별 댓글 추이")
 
-    fig1, ax1 = plt.subplots(figsize=(10, 4))
+    fig1, ax1 = plt.subplots(
+        figsize=(10, 4)
+    )
 
     sns.lineplot(
         data=hourly,
@@ -231,17 +238,21 @@ if st.button("댓글 분석 시작"):
         ax=ax1
     )
 
+    ax1.set_title("시간대별 댓글 추이")
     ax1.set_xlabel("시간")
     ax1.set_ylabel("댓글 수")
 
     st.pyplot(fig1)
 
-    # -----------------------------
+    # =====================
     # 좋아요 분포
-    # -----------------------------
+    # =====================
+
     st.subheader("👍 좋아요 분포")
 
-    fig2, ax2 = plt.subplots(figsize=(10, 4))
+    fig2, ax2 = plt.subplots(
+        figsize=(10, 4)
+    )
 
     sns.histplot(
         df["likes"],
@@ -250,13 +261,16 @@ if st.button("댓글 분석 시작"):
         ax=ax2
     )
 
+    ax2.set_title("좋아요 분포")
     ax2.set_xlabel("좋아요 수")
+    ax2.set_ylabel("댓글 개수")
 
     st.pyplot(fig2)
 
-    # -----------------------------
+    # =====================
     # TOP 댓글
-    # -----------------------------
+    # =====================
+
     st.subheader("🔥 좋아요 TOP 댓글")
 
     top_comments = (
@@ -273,9 +287,10 @@ if st.button("댓글 분석 시작"):
         ]
     )
 
-    # -----------------------------
+    # =====================
     # 워드클라우드
-    # -----------------------------
+    # =====================
+
     st.subheader("☁️ 워드클라우드")
 
     text = " ".join(
@@ -299,5 +314,5 @@ if st.button("댓글 분석 시작"):
     else:
 
         st.warning(
-            "워드클라우드를 생성할 수 없습니다."
+            "워드클라우드 생성 실패"
         )
