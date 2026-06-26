@@ -8,16 +8,27 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from urllib.parse import urlparse, parse_qs
 from pathlib import Path
+from matplotlib import font_manager
+import urllib.request
 import re
 
 # =====================
 # 한글 폰트 설정
 # =====================
 
-FONT_PATH = "/usr/share/fonts/truetype/nanum/NanumGothic.ttf"
+FONT_PATH = "/tmp/NanumGothic.ttf"
+FONT_URL = "https://github.com/google/fonts/raw/main/ofl/nanumgothic/NanumGothic-Regular.ttf"
 
-if Path(FONT_PATH).exists():
-    plt.rcParams["font.family"] = "NanumGothic"
+if not Path(FONT_PATH).exists():
+    try:
+        urllib.request.urlretrieve(FONT_URL, FONT_PATH)
+    except Exception:
+        FONT_PATH = None
+
+if FONT_PATH and Path(FONT_PATH).exists():
+    font_manager.fontManager.addfont(FONT_PATH)
+    prop = font_manager.FontProperties(fname=FONT_PATH)
+    plt.rcParams["font.family"] = prop.get_name()
 
 plt.rcParams["axes.unicode_minus"] = False
 
@@ -147,7 +158,7 @@ def create_wordcloud(text):
         return None
 
     wc = WordCloud(
-        font_path=FONT_PATH if Path(FONT_PATH).exists() else None,
+        font_path=FONT_PATH if FONT_PATH and Path(FONT_PATH).exists() else None,
         width=1200,
         height=600,
         background_color="white"
