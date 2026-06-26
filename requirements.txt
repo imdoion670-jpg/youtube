@@ -3,5 +3,3 @@ pandas
 matplotlib
 seaborn
 wordcloud
-kiwipiepy
-google-api-python-client
