@@ -1,5 +1,5 @@
 import streamlit as st
-from googleapiclient.discovery import build
+import yt_dlp
 
 # -------------------------
 # 페이지 설정
@@ -27,14 +27,6 @@ st.markdown("""
 """)
 
 # -------------------------
-# API KEY 입력
-# -------------------------
-API_KEY = st.text_input(
-    "YouTube Data API Key",
-    type="password"
-)
-
-# -------------------------
 # 채널명 입력
 # -------------------------
 channel_name = st.text_input(
@@ -43,64 +35,52 @@ channel_name = st.text_input(
 )
 
 # -------------------------
-# 채널 검색
+# 채널 정보 가져오기 (yt-dlp)
 # -------------------------
-def search_channel(youtube, channel_name):
+def get_channel_stats(channel_name):
 
-    request = youtube.search().list(
-        q=channel_name,
-        part="snippet",
-        type="channel",
-        maxResults=1
-    )
+    search_url = f"ytsearch1:{channel_name}"
 
-    response = request.execute()
+    ydl_opts = {
+        "quiet": True,
+        "no_warnings": True,
+        "extract_flat": True,
+    }
 
-    if not response["items"]:
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        search_result = ydl.extract_info(
+            search_url,
+            download=False
+        )
+
+    if not search_result.get("entries"):
         return None
 
-    return response["items"][0]["snippet"]["channelId"]
+    channel_url = search_result["entries"][0].get("channel_url")
 
-
-# -------------------------
-# 채널 정보 가져오기
-# -------------------------
-def get_channel_stats(youtube, channel_id):
-
-    request = youtube.channels().list(
-        part="snippet,statistics",
-        id=channel_id
-    )
-
-    response = request.execute()
-
-    if not response["items"]:
+    if not channel_url:
         return None
 
-    item = response["items"][0]
+    channel_opts = {
+        "quiet": True,
+        "no_warnings": True,
+        "extract_flat": True,
+        "playlistend": 1,
+    }
+
+    with yt_dlp.YoutubeDL(channel_opts) as ydl:
+        channel_info = ydl.extract_info(
+            channel_url,
+            download=False
+        )
 
     return {
-        "title": item["snippet"]["title"],
-        "description": item["snippet"]["description"],
-        "thumbnail": item["snippet"]["thumbnails"]["high"]["url"],
-        "subscribers": int(
-            item["statistics"].get(
-                "subscriberCount",
-                0
-            )
-        ),
-        "views": int(
-            item["statistics"].get(
-                "viewCount",
-                0
-            )
-        ),
-        "videos": int(
-            item["statistics"].get(
-                "videoCount",
-                0
-            )
-        )
+        "title": channel_info.get("channel") or channel_info.get("uploader", ""),
+        "thumbnail": channel_info.get("thumbnails", [{}])[-1].get("url", ""),
+        "subscribers": channel_info.get("channel_follower_count", 0) or 0,
+        "views": channel_info.get("view_count", 0) or 0,
+        "videos": channel_info.get("playlist_count", 0) or 0,
+        "description": channel_info.get("description", ""),
     }
 
 
@@ -127,37 +107,19 @@ def estimate_revenue(total_views):
 # -------------------------
 if st.button("분석하기"):
 
-    if not API_KEY:
-        st.error("YouTube API Key를 입력하세요.")
-        st.stop()
-
     if not channel_name:
         st.error("채널명을 입력하세요.")
         st.stop()
 
     try:
 
-        youtube = build(
-            "youtube",
-            "v3",
-            developerKey=API_KEY
-        )
-
         with st.spinner("분석 중..."):
 
-            channel_id = search_channel(
-                youtube,
-                channel_name
-            )
+            data = get_channel_stats(channel_name)
 
-            if not channel_id:
+            if not data:
                 st.error("채널을 찾을 수 없습니다.")
                 st.stop()
-
-            data = get_channel_stats(
-                youtube,
-                channel_id
-            )
 
             revenue = estimate_revenue(
                 data["views"]
@@ -166,10 +128,11 @@ if st.button("분석하기"):
         col1, col2 = st.columns([1, 3])
 
         with col1:
-            st.image(
-                data["thumbnail"],
-                width=180
-            )
+            if data["thumbnail"]:
+                st.image(
+                    data["thumbnail"],
+                    width=180
+                )
 
         with col2:
 
