@@ -4,12 +4,10 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from wordcloud import WordCloud
 from collections import Counter
-from googleapiclient.discovery import build
-from googleapiclient.errors import HttpError
-from urllib.parse import urlparse, parse_qs
 from pathlib import Path
 from matplotlib import font_manager
 import urllib.request
+import yt_dlp
 import re
 
 # =====================
@@ -48,11 +46,6 @@ st.title("📺 YouTube 댓글 분석기")
 # 입력
 # =====================
 
-api_key = st.text_input(
-    "YouTube API Key",
-    type="password"
-)
-
 video_url = st.text_input(
     "유튜브 영상 링크"
 )
@@ -66,69 +59,38 @@ max_comments = st.slider(
 )
 
 # =====================
-# 비디오 ID 추출
+# 댓글 수집 (yt-dlp)
 # =====================
 
-def extract_video_id(url):
+def get_comments(url, limit):
 
-    try:
+    ydl_opts = {
+        "quiet": True,
+        "no_warnings": True,
+        "extract_flat": False,
+        "getcomments": True,
+        "extractor_args": {
+            "youtube": {
+                "max_comments": [str(limit)]
+            }
+        }
+    }
 
-        if "youtu.be" in url:
-            return url.split("/")[-1].split("?")[0]
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        info = ydl.extract_info(url, download=False)
 
-        if "youtube.com" in url:
-
-            return parse_qs(
-                urlparse(url).query
-            ).get("v", [None])[0]
-
-    except:
-        return None
-
-    return None
-
-# =====================
-# 댓글 수집
-# =====================
-
-def get_comments(video_id, api_key, limit):
-
-    youtube = build(
-        "youtube",
-        "v3",
-        developerKey=api_key
-    )
+    raw = info.get("comments") or []
 
     comments = []
 
-    request = youtube.commentThreads().list(
-        part="snippet",
-        videoId=video_id,
-        maxResults=100,
-        textFormat="plainText"
-    )
-
-    while request and len(comments) < limit:
-
-        response = request.execute()
-
-        for item in response["items"]:
-
-            snippet = item["snippet"]["topLevelComment"]["snippet"]
-
-            comments.append({
-                "comment": snippet["textDisplay"],
-                "likes": snippet["likeCount"],
-                "publishedAt": snippet["publishedAt"]
-            })
-
-            if len(comments) >= limit:
-                break
-
-        request = youtube.commentThreads().list_next(
-            request,
-            response
-        )
+    for c in raw[:limit]:
+        comments.append({
+            "comment": c.get("text", ""),
+            "likes": c.get("like_count", 0),
+            "publishedAt": pd.to_datetime(
+                c.get("timestamp", 0), unit="s", utc=True
+            )
+        })
 
     return pd.DataFrame(comments)
 
@@ -172,18 +134,8 @@ def create_wordcloud(text):
 
 if st.button("댓글 분석 시작"):
 
-    if not api_key:
-        st.warning("API Key를 입력하세요.")
-        st.stop()
-
     if not video_url:
         st.warning("유튜브 링크를 입력하세요.")
-        st.stop()
-
-    video_id = extract_video_id(video_url)
-
-    if not video_id:
-        st.error("올바른 유튜브 링크가 아닙니다.")
         st.stop()
 
     try:
@@ -191,14 +143,13 @@ if st.button("댓글 분석 시작"):
         with st.spinner("댓글 수집 중..."):
 
             df = get_comments(
-                video_id,
-                api_key,
+                video_url,
                 max_comments
             )
 
-    except HttpError as e:
+    except Exception as e:
 
-        st.error(f"YouTube API 오류\n\n{e}")
+        st.error(f"댓글 수집 오류\n\n{e}")
         st.stop()
 
     if df.empty:
@@ -220,14 +171,7 @@ if st.button("댓글 분석 시작"):
     # 시간대 분석
     # =====================
 
-    df["publishedAt"] = pd.to_datetime(
-        df["publishedAt"]
-    )
-
-    df["hour"] = (
-        df["publishedAt"]
-        .dt.hour
-    )
+    df["hour"] = df["publishedAt"].dt.hour
 
     hourly = (
         df.groupby("hour")
