@@ -7,7 +7,6 @@ from collections import Counter
 from pathlib import Path
 from matplotlib import font_manager
 import urllib.request
-import yt_dlp
 import re
 
 # =====================
