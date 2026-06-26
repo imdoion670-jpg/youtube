@@ -5,6 +5,7 @@ import matplotlib.pyplot as plt
 from matplotlib import font_manager
 from pathlib import Path
 import urllib.request
+import concurrent.futures
 
 # -------------------------
 # 한글 폰트 설정
@@ -35,9 +36,6 @@ st.set_page_config(
     layout="wide"
 )
 
-# -------------------------
-# 제목
-# -------------------------
 st.title("📺 유튜브 채널 수익 분석기")
 
 st.markdown("""
@@ -55,7 +53,7 @@ st.markdown("""
 """)
 
 # -------------------------
-# 채널명 입력
+# 입력
 # -------------------------
 channel_name = st.text_input(
     "유튜브 채널명",
@@ -64,67 +62,78 @@ channel_name = st.text_input(
 
 recent_count = st.slider(
     "최근 영상 수",
-    5, 30, 10, 5
+    5, 20, 10, 5
 )
+
+# -------------------------
+# 단일 영상 정보 가져오기
+# -------------------------
+def fetch_video(entry):
+    try:
+        url = f"https://www.youtube.com/watch?v={entry.get('id', '')}"
+        opts = {"quiet": True, "no_warnings": True}
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+            return {
+                "제목": info.get("title", ""),
+                "조회수": info.get("view_count", 0) or 0,
+                "좋아요": info.get("like_count", 0) or 0,
+                "업로드일": info.get("upload_date", "") or "",
+                "url": info.get("webpage_url", ""),
+            }
+    except Exception:
+        return None
+
 
 # -------------------------
 # 채널 정보 가져오기
 # -------------------------
 def get_channel_stats(channel_name, recent_count):
 
-    # 채널 URL 검색
-    search_url = f"ytsearch1:{channel_name}"
-
+    # 1단계: 채널 검색
     with yt_dlp.YoutubeDL({"quiet": True, "no_warnings": True, "extract_flat": True}) as ydl:
-        search_result = ydl.extract_info(search_url, download=False)
+        search_result = ydl.extract_info(f"ytsearch1:{channel_name}", download=False)
 
     if not search_result.get("entries"):
         return None, None
 
-    channel_url = search_result["entries"][0].get("channel_url")
-
+    entry0 = search_result["entries"][0]
+    channel_url = entry0.get("channel_url")
     if not channel_url:
         return None, None
 
-    # 채널 기본 정보 + 최근 영상
-    channel_opts = {
+    # 2단계: 채널 영상 목록만 추출 (extract_flat — 빠름)
+    list_opts = {
         "quiet": True,
         "no_warnings": True,
         "extract_flat": True,
         "playlistend": recent_count,
     }
 
-    with yt_dlp.YoutubeDL(channel_opts) as ydl:
+    with yt_dlp.YoutubeDL(list_opts) as ydl:
         channel_info = ydl.extract_info(channel_url, download=False)
 
-    entries = channel_info.get("entries") or []
+    entries = [e for e in (channel_info.get("entries") or []) if e][:recent_count]
 
-    # 각 영상 조회수 가져오기
+    # 3단계: 영상 조회수 병렬 수집
     videos = []
-    video_opts = {"quiet": True, "no_warnings": True}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+        futures = {executor.submit(fetch_video, e): e for e in entries}
+        for future in concurrent.futures.as_completed(futures):
+            result = future.result()
+            if result:
+                videos.append(result)
 
-    for entry in entries[:recent_count]:
-        video_url = entry.get("url") or entry.get("webpage_url")
-        if not video_url:
-            continue
-        try:
-            with yt_dlp.YoutubeDL(video_opts) as ydl:
-                info = ydl.extract_info(video_url, download=False)
-                videos.append({
-                    "제목": info.get("title", ""),
-                    "조회수": info.get("view_count", 0) or 0,
-                    "좋아요": info.get("like_count", 0) or 0,
-                    "업로드일": info.get("upload_date", ""),
-                    "url": info.get("webpage_url", ""),
-                })
-        except Exception:
-            continue
+    # 업로드일 기준 정렬
+    videos.sort(key=lambda x: x["업로드일"], reverse=True)
+
+    total_views = sum(v["조회수"] for v in videos)
 
     channel_data = {
         "title": channel_info.get("channel") or channel_info.get("uploader", ""),
         "thumbnail": (channel_info.get("thumbnails") or [{}])[-1].get("url", ""),
         "subscribers": channel_info.get("channel_follower_count", 0) or 0,
-        "views": sum(v["조회수"] for v in videos) if videos else 0,
+        "views": total_views,
         "videos": channel_info.get("playlist_count", 0) or len(videos),
     }
 
@@ -135,9 +144,7 @@ def get_channel_stats(channel_name, recent_count):
 # 수익 추정
 # -------------------------
 def estimate_revenue(total_views):
-
     monthly_views = total_views * 0.03
-
     return {
         "monthly_low":  monthly_views / 1000 * 1,
         "monthly_avg":  monthly_views / 1000 * 3,
@@ -156,7 +163,7 @@ if st.button("분석하기"):
 
     try:
 
-        with st.spinner("채널 정보 수집 중..."):
+        with st.spinner(f"채널 정보 및 최근 영상 {recent_count}개 수집 중..."):
             data, videos = get_channel_stats(channel_name, recent_count)
 
         if not data:
@@ -178,18 +185,16 @@ if st.button("분석하기"):
             st.subheader(data["title"])
 
             m1, m2, m3 = st.columns(3)
-
             m1.metric("구독자", f"{data['subscribers']:,}")
-            m2.metric("총 조회수 (최근)", f"{data['views']:,}")
+            m2.metric(f"총 조회수 (최근 {len(videos)}개)", f"{data['views']:,}")
             m3.metric("영상 수", f"{data['videos']:,}")
 
-            # 참여율
-            if data["subscribers"] > 0 and data["views"] > 0:
-                engagement = (data["views"] / data["videos"] / data["subscribers"] * 100) if data["videos"] > 0 else 0
-                avg_views = data["views"] // data["videos"] if data["videos"] > 0 else 0
+            if data["subscribers"] > 0 and len(videos) > 0 and data["views"] > 0:
+                avg_views = data["views"] // len(videos)
+                engagement = avg_views / data["subscribers"] * 100
                 e1, e2 = st.columns(2)
                 e1.metric("영상별 평균 조회수", f"{avg_views:,}")
-                e2.metric("참여율 (평균조회수/구독자)", f"{engagement:.2f}%")
+                e2.metric("참여율", f"{engagement:.2f}%")
 
         st.divider()
 
@@ -215,25 +220,22 @@ if st.button("분석하기"):
             st.subheader(f"🎬 최근 영상 {len(videos)}개")
 
             df = pd.DataFrame(videos)
-            df["업로드일"] = pd.to_datetime(df["업로드일"], format="%Y%m%d", errors="coerce").dt.strftime("%Y-%m-%d")
-            df["링크"] = df["url"].apply(lambda x: f"[보기]({x})")
+            df["업로드일"] = pd.to_datetime(
+                df["업로드일"], format="%Y%m%d", errors="coerce"
+            ).dt.strftime("%Y-%m-%d")
 
             st.dataframe(
                 df[["제목", "조회수", "좋아요", "업로드일"]],
                 use_container_width=True
             )
 
-            # 조회수 차트
             st.subheader("📊 영상별 조회수")
 
             fig, ax = plt.subplots(figsize=(10, max(4, len(df) * 0.5)))
-
             titles = [t[:20] + "..." if len(t) > 20 else t for t in df["제목"]]
-
             ax.barh(titles[::-1], df["조회수"][::-1], color="#4f86c6")
             ax.set_xlabel("조회수")
             ax.set_title("최근 영상 조회수 비교")
-
             st.pyplot(fig)
 
     except Exception as e:
