@@ -147,7 +147,7 @@ def create_wordcloud(text):
         return None
 
     wc = WordCloud(
-        font_path=FONT_PATH,
+        font_path=FONT_PATH if Path(FONT_PATH).exists() else None,
         width=1200,
         height=600,
         background_color="white"
