@@ -4,8 +4,8 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from wordcloud import WordCloud
 from collections import Counter
+from urllib.parse import urlparse, parse_qs
 from pathlib import Path
-import anthropic
 import re
 
 # =====================
@@ -31,25 +31,19 @@ st.set_page_config(
 
 st.title("📺 YouTube 댓글 분석기")
 
-st.info(
-    "유튜브 영상의 댓글을 복사해서 아래에 붙여넣으세요. "
-    "줄바꿈으로 댓글을 구분합니다.",
-    icon="ℹ️"
-)
-
 # =====================
 # 입력
 # =====================
 
 video_url = st.text_input(
-    "유튜브 영상 링크 (선택사항 — 참고용)"
+    "유튜브 영상 링크 (선택사항)"
 )
 
-raw_text = st.text_area(
+raw_comments = st.text_area(
     "댓글 붙여넣기",
     height=200,
     placeholder=(
-        "댓글을 줄바꿈으로 구분해서 붙여넣으세요.\n\n"
+        "유튜브 댓글을 복사해서 붙여넣으세요. 줄바꿈으로 구분합니다.\n\n"
         "예시:\n"
         "이 영상 진짜 유익해요!\n"
         "설명이 너무 어렵네요\n"
@@ -57,23 +51,22 @@ raw_text = st.text_area(
     )
 )
 
-analysis_mode = st.selectbox(
-    "AI 분석 방향",
-    [
-        "전반적인 반응 분석",
-        "감성 분석 (긍정/부정/중립)",
-        "주요 주제 및 키워드 추출",
-        "시청자 요청/피드백 정리",
-    ]
+max_comments = st.slider(
+    "분석할 댓글 수",
+    20,
+    1000,
+    200,
+    20
 )
 
 # =====================
 # 댓글 파싱
 # =====================
 
-def parse_comments(text):
+def parse_comments(text, limit):
     lines = [l.strip() for l in text.strip().splitlines()]
     lines = [l for l in lines if len(l) >= 2]
+    lines = lines[:limit]
     return pd.DataFrame({"comment": lines})
 
 # =====================
@@ -81,11 +74,24 @@ def parse_comments(text):
 # =====================
 
 def create_wordcloud(text):
-    text = re.sub(r"[^가-힣a-zA-Z\s]", " ", text)
-    words = [w for w in text.split() if len(w) >= 2]
+
+    text = re.sub(
+        r"[^가-힣a-zA-Z\s]",
+        " ",
+        text
+    )
+
+    words = text.split()
+
+    words = [
+        word
+        for word in words
+        if len(word) >= 2
+    ]
+
     counter = Counter(words)
 
-    if not counter:
+    if len(counter) == 0:
         return None
 
     font_path = FONT_PATH if Path(FONT_PATH).exists() else None
@@ -100,72 +106,19 @@ def create_wordcloud(text):
     return wc.generate_from_frequencies(counter)
 
 # =====================
-# Claude AI 분석
-# =====================
-
-def analyze_with_claude(comments, mode, url=""):
-    client = anthropic.Anthropic()
-
-    video_info = f"유튜브 영상 URL: {url}\n" if url else ""
-    comment_list = "\n".join(
-        f"{i+1}. {c}" for i, c in enumerate(comments)
-    )
-
-    prompts = {
-        "전반적인 반응 분석": (
-            f"다음은 유튜브 영상의 댓글들입니다. "
-            f"전반적인 시청자 반응을 한국어로 분석해주세요. "
-            f"전체적인 분위기, 주요 반응 패턴, 눈에 띄는 의견들을 정리해주세요.\n\n"
-            f"{video_info}댓글 수: {len(comments)}개\n\n"
-            f"댓글 목록:\n{comment_list}"
-        ),
-        "감성 분석 (긍정/부정/중립)": (
-            f"다음 유튜브 댓글들을 감성 분석해주세요. "
-            f"긍정/부정/중립 비율을 추정하고, 각 카테고리의 대표 댓글 예시와 함께 "
-            f"한국어로 설명해주세요.\n\n"
-            f"{video_info}댓글 수: {len(comments)}개\n\n"
-            f"댓글 목록:\n{comment_list}"
-        ),
-        "주요 주제 및 키워드 추출": (
-            f"다음 유튜브 댓글들에서 주요 주제와 키워드를 추출해주세요. "
-            f"많이 언급된 토픽, 핵심 키워드, 시청자들이 가장 관심 갖는 내용을 "
-            f"한국어로 정리해주세요.\n\n"
-            f"{video_info}댓글 수: {len(comments)}개\n\n"
-            f"댓글 목록:\n{comment_list}"
-        ),
-        "시청자 요청/피드백 정리": (
-            f"다음 유튜브 댓글들에서 시청자들의 요청사항, 건설적인 피드백, "
-            f"개선 제안을 정리해주세요. 크리에이터가 참고할 수 있도록 "
-            f"한국어로 구체적으로 요약해주세요.\n\n"
-            f"{video_info}댓글 수: {len(comments)}개\n\n"
-            f"댓글 목록:\n{comment_list}"
-        ),
-    }
-
-    message = client.messages.create(
-        model="claude-opus-4-6",
-        max_tokens=1024,
-        messages=[
-            {"role": "user", "content": prompts[mode]}
-        ]
-    )
-
-    return message.content[0].text
-
-# =====================
 # 분석 시작
 # =====================
 
 if st.button("댓글 분석 시작"):
 
-    if not raw_text.strip():
-        st.warning("댓글을 입력해주세요.")
+    if not raw_comments.strip():
+        st.warning("댓글을 붙여넣어 주세요.")
         st.stop()
 
-    df = parse_comments(raw_text)
+    df = parse_comments(raw_comments, max_comments)
 
     if df.empty:
-        st.error("유효한 댓글이 없습니다. 줄바꿈으로 구분된 댓글을 입력해주세요.")
+        st.error("유효한 댓글이 없습니다.")
         st.stop()
 
     st.success(f"{len(df)}개 댓글 로드 완료")
@@ -175,7 +128,8 @@ if st.button("댓글 분석 시작"):
     # =====================
 
     st.subheader("📄 댓글 데이터")
-    st.dataframe(df.head(20), use_container_width=True)
+
+    st.dataframe(df.head(20))
 
     # =====================
     # 댓글 길이 분포
@@ -183,23 +137,50 @@ if st.button("댓글 분석 시작"):
 
     df["length"] = df["comment"].str.len()
 
+    hourly = (
+        df.groupby("length")
+        .size()
+        .reset_index(name="count")
+    )
+
     st.subheader("📏 댓글 길이 분포")
 
-    fig1, ax1 = plt.subplots(figsize=(10, 4))
+    fig1, ax1 = plt.subplots(
+        figsize=(10, 4)
+    )
 
     sns.histplot(
         df["length"],
         bins=20,
         kde=True,
-        ax=ax1,
-        color="#4f86c6"
+        ax=ax1
     )
 
     ax1.set_title("댓글 길이 분포")
     ax1.set_xlabel("글자 수")
-    ax1.set_ylabel("댓글 개수")
+    ax1.set_ylabel("댓글 수")
 
     st.pyplot(fig1)
+
+    # =====================
+    # 빈출 단어 TOP 댓글
+    # =====================
+
+    st.subheader("🔥 긴 댓글 TOP 10")
+
+    top_comments = (
+        df.sort_values(
+            by="length",
+            ascending=False
+        )
+        .head(10)
+    )
+
+    st.dataframe(
+        top_comments[
+            ["comment", "length"]
+        ]
+    )
 
     # =====================
     # 워드클라우드
@@ -207,16 +188,29 @@ if st.button("댓글 분석 시작"):
 
     st.subheader("☁️ 워드클라우드")
 
-    text = " ".join(df["comment"].astype(str))
+    text = " ".join(
+        df["comment"].astype(str)
+    )
+
     wc = create_wordcloud(text)
 
     if wc:
-        fig2, ax2 = plt.subplots(figsize=(15, 7))
+
+        fig2, ax2 = plt.subplots(
+            figsize=(15, 7)
+        )
+
         ax2.imshow(wc)
+
         ax2.axis("off")
+
         st.pyplot(fig2)
+
     else:
-        st.warning("워드클라우드를 생성할 수 없습니다.")
+
+        st.warning(
+            "워드클라우드 생성 실패"
+        )
 
     # =====================
     # 빈출 단어 TOP 20
@@ -230,6 +224,7 @@ if st.button("댓글 분석 시작"):
     )
 
     if word_counts:
+
         top_words = pd.DataFrame(
             word_counts.most_common(20),
             columns=["단어", "빈도"]
@@ -246,21 +241,5 @@ if st.button("댓글 분석 시작"):
         )
 
         ax3.set_title("빈출 단어 TOP 20")
+
         st.pyplot(fig3)
-
-    # =====================
-    # AI 분석
-    # =====================
-
-    st.subheader(f"🤖 AI 분석 — {analysis_mode}")
-
-    with st.spinner("Claude가 분석 중입니다..."):
-        try:
-            result = analyze_with_claude(
-                df["comment"].tolist(),
-                analysis_mode,
-                video_url
-            )
-            st.markdown(result)
-        except Exception as e:
-            st.error(f"AI 분석 중 오류가 발생했습니다: {e}")
