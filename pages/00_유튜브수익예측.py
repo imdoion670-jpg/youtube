@@ -30,49 +30,126 @@ plt.rcParams["axes.unicode_minus"] = False
 # 페이지 설정
 # -------------------------
 st.set_page_config(page_title="YouTube 수익 분석기", page_icon="📺", layout="wide")
-
 st.title("📺 유튜브 채널 수익 분석기")
-st.markdown("""
-채널명을 입력하면 구독자 수, 총 조회수, 예상 월 광고 수익, 최근 영상 목록 등을 분석합니다.
-""")
+st.markdown("채널명을 입력하면 구독자 수, 조회수, 예상 수익, 최근 영상 목록을 분석합니다.")
 
 # -------------------------
 # 입력
 # -------------------------
-channel_name = st.text_input("유튜브 채널명", placeholder="예: 침착맨")
+channel_name = st.text_input("유튜브 채널명", placeholder="예: 침착맨  또는  @chimchakman")
 recent_count = st.slider("최근 영상 수", 5, 20, 10, 5)
 
 
-# -------------------------
-# 유틸: 모든 video entry 평탄화
-# -------------------------
-def flatten_entries(entries):
-    """중첩 playlist 구조를 재귀적으로 펼쳐서 video entry 목록 반환"""
-    result = []
-    for e in entries or []:
-        if not e:
+# ====================================================
+# STEP 1: 채널명 → 채널 URL + 채널 메타 확보
+# ====================================================
+def find_channel_url(name: str) -> tuple:
+    """
+    채널명으로 검색해서 (channel_url, channel_meta_dict) 반환.
+    extract_flat 없이 검색 결과 3개만 가져와서 channel_url 추출.
+    """
+    search_opts = {
+        "quiet": True,
+        "no_warnings": True,
+        "ignoreerrors": True,
+        # extract_flat 사용하지 않음 — 영상 메타에서 channel_url 직접 접근
+        "playlistend": 3,
+        "skip_download": True,
+    }
+
+    queries = [
+        f"ytsearch3:{name}",          # 일반 검색
+        f"ytsearch3:{name} 유튜브",    # 검색어 보강
+    ]
+
+    for q in queries:
+        try:
+            with yt_dlp.YoutubeDL(search_opts) as ydl:
+                result = ydl.extract_info(q, download=False)
+            for entry in (result.get("entries") or []):
+                if not entry:
+                    continue
+                ch_url = entry.get("channel_url") or entry.get("uploader_url")
+                if ch_url:
+                    meta = {
+                        "title": entry.get("channel") or entry.get("uploader", name),
+                        "thumbnail": entry.get("thumbnail", ""),
+                        "subscribers": entry.get("channel_follower_count", 0) or 0,
+                    }
+                    return ch_url, meta
+        except Exception:
             continue
-        if e.get("_type") == "playlist":
-            result.extend(flatten_entries(e.get("entries") or []))
-        else:
-            vid_id = e.get("id") or e.get("url") or ""
-            if vid_id:
-                result.append(e)
-    return result
+
+    return None, {}
 
 
-# -------------------------
-# 단일 영상 상세 정보
-# -------------------------
-def fetch_video(entry):
+# ====================================================
+# STEP 2: 채널 URL → 영상 목록 (ID만 빠르게)
+# ====================================================
+def fetch_video_ids(channel_url: str, count: int) -> tuple:
+    """
+    채널의 /videos 탭에서 영상 ID 목록과 채널 메타 반환.
+    extract_flat=True 로 빠르게 ID만 수집.
+    """
+    tabs = [
+        channel_url.rstrip("/") + "/videos",
+        channel_url.rstrip("/"),
+    ]
+
+    list_opts = {
+        "quiet": True,
+        "no_warnings": True,
+        "ignoreerrors": True,
+        "extract_flat": True,
+        "playlistend": count,
+    }
+
+    for tab_url in tabs:
+        try:
+            with yt_dlp.YoutubeDL(list_opts) as ydl:
+                info = ydl.extract_info(tab_url, download=False)
+
+            if not info:
+                continue
+
+            # entries 수집 — 중첩 구조 처리
+            raw = info.get("entries") or []
+            ids = []
+            for e in raw:
+                if not e:
+                    continue
+                # 중첩 playlist (Shorts/Live/Videos 탭 묶음)
+                if e.get("_type") == "playlist":
+                    for sub in (e.get("entries") or []):
+                        if sub and sub.get("id"):
+                            ids.append(sub["id"])
+                else:
+                    vid_id = e.get("id")
+                    if vid_id:
+                        ids.append(vid_id)
+
+            if ids:
+                channel_meta = {
+                    "title": info.get("channel") or info.get("uploader", ""),
+                    "thumbnail": (info.get("thumbnails") or [{}])[-1].get("url", ""),
+                    "subscribers": info.get("channel_follower_count", 0) or 0,
+                    "total_videos": info.get("playlist_count", 0) or 0,
+                }
+                return ids[:count], channel_meta
+
+        except Exception:
+            continue
+
+    return [], {}
+
+
+# ====================================================
+# STEP 3: 영상 ID → 상세 정보 (조회수 등)
+# ====================================================
+def fetch_single_video(video_id: str) -> dict | None:
+    url = f"https://www.youtube.com/watch?v={video_id}"
+    opts = {"quiet": True, "no_warnings": True, "skip_download": True}
     try:
-        vid_id = entry.get("id") or entry.get("url", "")
-        if vid_id.startswith("http"):
-            url = vid_id
-        else:
-            url = f"https://www.youtube.com/watch?v={vid_id}"
-
-        opts = {"quiet": True, "no_warnings": True, "skip_download": True}
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=False)
         return {
@@ -86,180 +163,165 @@ def fetch_video(entry):
         return None
 
 
-# -------------------------
-# 채널 탐색 전략 목록
-# -------------------------
-def build_channel_urls(name: str) -> list:
-    """여러 URL 전략을 순서대로 시도할 리스트 반환"""
-    encoded = name.strip()
-    return [
-        f"https://www.youtube.com/@{encoded}/videos",
-        f"https://www.youtube.com/c/{encoded}/videos",
-        f"https://www.youtube.com/user/{encoded}/videos",
-        f"ytsearch15:{encoded}",
-    ]
-
-
-# -------------------------
-# 채널 정보 수집 메인
-# -------------------------
-def get_channel_stats(channel_name: str, recent_count: int):
-    base_opts = {
-        "quiet": True,
-        "no_warnings": True,
-        "ignoreerrors": True,
-        "extract_flat": True,
-        "playlistend": recent_count,
-    }
-
-    channel_info = None
-    entries = []
-
-    for url in build_channel_urls(channel_name):
-        try:
-            with yt_dlp.YoutubeDL(base_opts) as ydl:
-                info = ydl.extract_info(url, download=False)
-
-            if not info:
-                continue
-
-            # ytsearch 결과: channel_url 추출 후 채널 재탐색
-            if url.startswith("ytsearch"):
-                found_url = None
-                for e in (info.get("entries") or []):
-                    ch_url = (e or {}).get("channel_url")
-                    if ch_url:
-                        found_url = ch_url + "/videos"
-                        break
-                if not found_url:
-                    continue
-                with yt_dlp.YoutubeDL(base_opts) as ydl:
-                    info = ydl.extract_info(found_url, download=False)
-                if not info:
-                    continue
-
-            flat = flatten_entries(info.get("entries") or [])
-            if flat:
-                channel_info = info
-                entries = flat[:recent_count]
-                break
-
-        except Exception:
-            continue
-
-    if not channel_info or not entries:
-        return None, None
-
-    # 병렬 영상 상세 수집
+def fetch_videos_parallel(video_ids: list, max_workers: int = 6) -> list:
     videos = []
-    with concurrent.futures.ThreadPoolExecutor(max_workers=6) as executor:
-        futures = {executor.submit(fetch_video, e): e for e in entries}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as ex:
+        futures = {ex.submit(fetch_single_video, vid): vid for vid in video_ids}
         for future in concurrent.futures.as_completed(futures):
             res = future.result()
             if res:
                 videos.append(res)
+    videos.sort(key=lambda x: x["업로드일"], reverse=True)
+    return videos
 
+
+# ====================================================
+# 메인 파이프라인
+# ====================================================
+def get_channel_stats(channel_name: str, recent_count: int):
+    # 1) 채널 URL 탐색
+    channel_url, meta_from_search = find_channel_url(channel_name)
+    if not channel_url:
+        return None, None
+
+    # 2) 영상 ID 목록 수집
+    video_ids, meta_from_channel = fetch_video_ids(channel_url, recent_count)
+    if not video_ids:
+        return None, None
+
+    # 3) 영상 상세 정보 병렬 수집
+    videos = fetch_videos_parallel(video_ids)
     if not videos:
         return None, None
 
-    videos.sort(key=lambda x: x["업로드일"], reverse=True)
+    # 메타 합치기 (채널 페이지 우선, 검색 결과 보완)
     total_views = sum(v["조회수"] for v in videos)
-
     channel_data = {
         "title": (
-            channel_info.get("channel")
-            or channel_info.get("uploader")
+            meta_from_channel.get("title")
+            or meta_from_search.get("title")
             or channel_name
         ),
-        "thumbnail": (channel_info.get("thumbnails") or [{}])[-1].get("url", ""),
-        "subscribers": channel_info.get("channel_follower_count", 0) or 0,
+        "thumbnail": (
+            meta_from_channel.get("thumbnail")
+            or meta_from_search.get("thumbnail")
+            or ""
+        ),
+        "subscribers": (
+            meta_from_channel.get("subscribers")
+            or meta_from_search.get("subscribers")
+            or 0
+        ),
         "views": total_views,
-        "videos": channel_info.get("playlist_count", 0) or len(videos),
+        "videos": meta_from_channel.get("total_videos") or len(videos),
     }
 
     return channel_data, videos
 
 
-# -------------------------
+# ====================================================
 # 수익 추정
-# -------------------------
+# ====================================================
 def estimate_revenue(total_views: int, num_videos: int) -> dict:
     avg = total_views / max(num_videos, 1)
-    monthly_views = avg * 4  # 월 4편 업로드 가정
+    monthly_views = avg * 4  # 월 4편 가정
     return {
-        "monthly_low":  monthly_views / 1000 * 1,
-        "monthly_avg":  monthly_views / 1000 * 3,
-        "monthly_high": monthly_views / 1000 * 8,
+        "low":  monthly_views / 1000 * 1,
+        "avg":  monthly_views / 1000 * 3,
+        "high": monthly_views / 1000 * 8,
     }
 
 
-# -------------------------
-# 분석 실행
-# -------------------------
+# ====================================================
+# UI — 분석 실행
+# ====================================================
 if st.button("분석하기"):
     if not channel_name.strip():
         st.error("채널명을 입력하세요.")
         st.stop()
 
-    with st.spinner(f"채널 정보 및 최근 영상 {recent_count}개 수집 중..."):
-        data, videos = get_channel_stats(channel_name.strip(), recent_count)
+    progress = st.empty()
 
-    if not data or not videos:
-        st.error(
-            "채널을 찾을 수 없거나 영상 정보를 가져오지 못했습니다.\n\n"
-            "**팁:** `@채널핸들` 형식(예: @chimchakman) 또는 영문 채널명으로 시도해보세요."
-        )
+    with progress.container():
+        with st.spinner("채널 URL 탐색 중..."):
+            channel_url, meta = find_channel_url(channel_name.strip())
+
+        if not channel_url:
+            st.error(
+                "채널을 찾지 못했습니다.\n\n"
+                "**팁:** `@영문핸들` 형식(예: `@chimchakman`)으로 입력해 보세요."
+            )
+            st.stop()
+
+        with st.spinner(f"영상 목록 수집 중..."):
+            video_ids, ch_meta = fetch_video_ids(channel_url, recent_count)
+
+        if not video_ids:
+            st.error("영상 목록을 가져오지 못했습니다. 채널에 공개 영상이 없거나 접근이 제한되어 있습니다.")
+            st.stop()
+
+        with st.spinner(f"영상 {len(video_ids)}개 조회수 수집 중..."):
+            videos = fetch_videos_parallel(video_ids)
+
+    progress.empty()
+
+    if not videos:
+        st.error("영상 상세 정보를 가져오지 못했습니다.")
         st.stop()
 
-    revenue = estimate_revenue(data["views"], len(videos))
+    total_views = sum(v["조회수"] for v in videos)
+    channel_data = {
+        "title": ch_meta.get("title") or meta.get("title") or channel_name,
+        "thumbnail": ch_meta.get("thumbnail") or meta.get("thumbnail") or "",
+        "subscribers": ch_meta.get("subscribers") or meta.get("subscribers") or 0,
+        "views": total_views,
+        "videos": ch_meta.get("total_videos") or len(videos),
+    }
+    revenue = estimate_revenue(total_views, len(videos))
 
-    # 채널 기본 정보
+    # --- 채널 정보 ---
     col1, col2 = st.columns([1, 3])
     with col1:
-        if data["thumbnail"]:
-            st.image(data["thumbnail"], width=180)
+        if channel_data["thumbnail"]:
+            st.image(channel_data["thumbnail"], width=180)
     with col2:
-        st.subheader(data["title"])
+        st.subheader(channel_data["title"])
         m1, m2, m3 = st.columns(3)
-        m1.metric("구독자", f"{data['subscribers']:,}")
-        m2.metric(f"총 조회수 (최근 {len(videos)}개)", f"{data['views']:,}")
-        m3.metric("영상 수", f"{data['videos']:,}")
+        m1.metric("구독자", f"{channel_data['subscribers']:,}")
+        m2.metric(f"총 조회수 (최근 {len(videos)}개)", f"{total_views:,}")
+        m3.metric("영상 수", f"{channel_data['videos']:,}")
 
-        if data["subscribers"] > 0 and data["views"] > 0:
-            avg_views = data["views"] // len(videos)
-            engagement = avg_views / data["subscribers"] * 100
+        if channel_data["subscribers"] > 0 and total_views > 0:
+            avg_views = total_views // len(videos)
+            engagement = avg_views / channel_data["subscribers"] * 100
             e1, e2 = st.columns(2)
             e1.metric("영상별 평균 조회수", f"{avg_views:,}")
             e2.metric("참여율", f"{engagement:.2f}%")
 
     st.divider()
 
-    # 예상 수익
+    # --- 예상 수익 ---
     st.subheader("💰 예상 월 광고 수익")
     c1, c2, c3 = st.columns(3)
-    c1.metric("보수적", f"${revenue['monthly_low']:,.0f}")
-    c2.metric("평균",   f"${revenue['monthly_avg']:,.0f}")
-    c3.metric("낙관적", f"${revenue['monthly_high']:,.0f}")
-    st.info(
-        "수익 추정: 최근 영상 평균 조회수 × 월 4편 기준 / CPM $1~$8\n"
-        "실제 수익은 국가, 광고 유형, 멤버십, 협찬 등에 따라 다를 수 있습니다."
-    )
+    c1.metric("보수적", f"${revenue['low']:,.0f}")
+    c2.metric("평균",   f"${revenue['avg']:,.0f}")
+    c3.metric("낙관적", f"${revenue['high']:,.0f}")
+    st.info("추정 기준: 평균 조회수 × 월 4편 / CPM $1~$8 (국가·광고 유형에 따라 상이)")
 
     st.divider()
 
-    # 최근 영상 목록
+    # --- 영상 목록 ---
     st.subheader(f"🎬 최근 영상 {len(videos)}개")
     df = pd.DataFrame(videos)
     df["업로드일"] = pd.to_datetime(
         df["업로드일"], format="%Y%m%d", errors="coerce"
     ).dt.strftime("%Y-%m-%d")
-
     st.dataframe(df[["제목", "조회수", "좋아요", "업로드일"]], use_container_width=True)
 
-    # 차트
+    # --- 차트 ---
     st.subheader("📊 영상별 조회수")
     fig, ax = plt.subplots(figsize=(10, max(4, len(df) * 0.5)))
-    titles = [t[:20] + "..." if len(t) > 20 else t for t in df["제목"]]
+    titles = [t[:22] + "…" if len(t) > 22 else t for t in df["제목"]]
     ax.barh(titles[::-1], df["조회수"][::-1], color="#4f86c6")
     ax.set_xlabel("조회수")
     ax.set_title("최근 영상 조회수 비교")
